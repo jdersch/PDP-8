@@ -8,10 +8,17 @@
 # good enough for me
 #
 from array import array
-from msvcrt import getch
-from msvcrt import kbhit
 from signal import signal, SIGINT
 import sys
+
+import os
+if os.name == 'nt':
+    import msvcrt
+else:
+    import termios
+    import tty
+    from select import select
+
 
 class TeletypeKeyboard:
     """
@@ -70,11 +77,20 @@ class TeletypeKeyboard:
         If there is one, and the TTY interface isn't already busy,
         reads it and makes it available in '_char'
         """
-        if not self._charReady:            
-            if kbhit():
-                newChar = getch()[0]
-                self._charReady = True
-                self._char = newChar & 0o177                
+        if not self._charReady:
+            if os.name == 'nt':         
+                if msvcrt.kbhit():
+                    newChar = msvcrt.getch()[0]
+                    self._charReady = True
+                    self._char = newChar & 0o177
+            else:
+                dr,dw,de = select([sys.stdin], [], [], 0)
+                if dr != []:
+                    newChar = sys.stdin.read(1)
+                    if newChar == '\n':
+                        newChar = '\r'
+                    self._charReady = True
+                    self._char = ord(newChar) & 0o177           
 
     def clock(self):
         """
@@ -521,6 +537,17 @@ class PDP8:
         else:
             print('Invalid address')
 
+def captureTerm():
+    global prev_term
+    if os.name != 'nt':
+        stdin_fd = sys.stdin.fileno()
+        prev_term = termios.tcgetattr(stdin_fd)
+        tty.setcbreak(stdin_fd)
+
+def releaseTerm():
+    if os.name != 'nt':
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSAFLUSH, prev_term)
+
 def runDebugger():
     """ Runs an incredibly crude command prompt allowing basic manipulation of memory and the CPU """
     cpu = PDP8()
@@ -528,6 +555,7 @@ def runDebugger():
     # Set up some stuff so we can trap Ctrl+C to stop execution of the processor.
     def breakHandler(signal, frame):
         print("CTRL-C halt")
+        releaseTerm()
         cpu._halted = True
     
     signal(SIGINT, breakHandler)    
@@ -561,8 +589,10 @@ def runDebugger():
                 # r - Run the processor from the current PC
                 elif command == "r":
                     cpu._halted = False
+                    captureTerm()
                     while (not cpu._halted):
                         cpu.step()
+                    releaseTerm()
 
                 # d - Deposit a value into memory
                 # (usage: "d <addr> <value>")
